@@ -100,7 +100,3 @@ python test_app.py
 
 - `POST /api/simulation/toggle` - シミュレーションモードの切り替え
 - `GET /api/simulation/status` - シミュレーションモードの状態確認
-
-## ライセンス
-
-本プロジェクトはPedantic社の社内用です。
