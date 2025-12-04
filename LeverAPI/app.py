@@ -10,14 +10,18 @@ BFF（Backend For Frontend）として動作し、フロントエンド向けに
 データ集約・変換機能を備えたHTTP APIエンドポイントとWebSocketリアルタイム通信を提供します。
 """
 
+# Eventletを最初にインポートし、monkey_patchを適用（他のモジュールよりも先に）
+# 注意: Eventletは非推奨になっています。将来的には別のフレームワークへの移行を検討してください。
+# 詳細: https://eventlet.readthedocs.io/en/latest/asyncio/migration.html
+import eventlet
+eventlet.monkey_patch(thread=True, time=True, socket=True, select=True, os=True)
+
 import os
 import json
 import time
 import socket
 import logging
 import threading
-import eventlet
-eventlet.monkey_patch()  # 非同期I/Oのパッチ適用（WebSocketのパフォーマンス向上のため）
 
 from flask import Flask, jsonify, request, render_template, send_from_directory
 from flask_cors import CORS
@@ -551,7 +555,6 @@ def get_status():
     return create_success_response(status_data, meta)
 
 # アプリケーション開始前に初期スキャンを実行
-@app.before_first_request
 def initialize():
     """アプリケーション初期化"""
     # アプリケーション起動時間を記録
@@ -783,23 +786,80 @@ def realtime_monitor():
             logger.error(f"リアルタイム監視エラー: {e}")
             eventlet.sleep(1)  # エラー時は少し長めに待機
 
-# アプリケーション開始前に初期化処理を実行
-@app.before_first_request
-def initialize():
-    """アプリケーション初期化"""
-    # 別スレッドで初期スキャンを実行
-    threading.Thread(target=lambda: discovery.discover_devices()).start()
-
+# リアルタイム監視開始関数
+def start_realtime_monitor():
+    """リアルタイム監視タスクを開始"""
     # リアルタイム監視タスクをバックグラウンドで開始
     eventlet.spawn(realtime_monitor)
 
+# 使用可能なポートを探す関数
+def find_available_port(start_port, max_attempts=10):
+    """
+    使用可能なポートを探す
+
+    Args:
+        start_port (int): 開始ポート番号
+        max_attempts (int): 試行回数
+
+    Returns:
+        int: 使用可能なポート番号、見つからなければ0
+    """
+    import socket
+
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            # テスト用にソケットを開いてみる
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('0.0.0.0', port))
+                return port
+        except OSError:
+            continue
+
+    # 使用可能なポートが見つからなかった
+    return 0
+
 # メイン実行
 if __name__ == '__main__':
+    import argparse
+
+    # コマンドライン引数のパース
+    parser = argparse.ArgumentParser(description='PedanticLeverController BFF API サーバー')
+    parser.add_argument('--port', type=int, default=5000, help='サーバーのポート番号 (デフォルト: 5000)')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='サーバーのホスト (デフォルト: 0.0.0.0)')
+    parser.add_argument('--auto-port', action='store_true', help='使用中のポートを自動的に回避')
+    args = parser.parse_args()
+
+    # ポートが使用中の場合は別のポートを探す
+    port = args.port
+    if args.auto_port:
+        available_port = find_available_port(port)
+        if available_port > 0:
+            port = available_port
+        else:
+            print(f"警告: {port}〜{port+9}の範囲で使用可能なポートが見つかりません。デフォルトポートを使用します。")
+
     # 開発モードでの起動
     print("====================================================")
     print(" PedanticLeverController BFF API サーバー")
     print(" (C) 2023 Pedantic Co., Ltd.")
     print("====================================================")
+    print(f" ホスト: {args.host}")
+    print(f" ポート: {port}")
+    print("====================================================")
 
-    # WebSocketサーバーとして起動
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    # アプリケーションを初期化
+    initialize()
+    start_realtime_monitor()
+
+    try:
+        # WebSocketサーバーとして起動
+        socketio.run(app, host=args.host, port=port, debug=True)
+    except OSError as e:
+        if "Address already in use" in str(e):
+            print(f"エラー: ポート {port} は既に使用されています。")
+            print("別のポートを使用するには、--port オプションで別のポート番号を指定するか、")
+            print("--auto-port オプションを使用して自動的に空きポートを探すことができます。")
+            print("例: python app.py --port 5001")
+            print("例: python app.py --auto-port")
+        else:
+            raise
